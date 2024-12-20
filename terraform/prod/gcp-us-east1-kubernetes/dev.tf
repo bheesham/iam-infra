@@ -74,3 +74,7 @@ resource "google_container_node_pool" "iam_dev_default" {
     }
   }
 }
+
+resource "google_compute_global_address" "gke_iam_dev" {
+  name = "gke-iam-dev"
+}
