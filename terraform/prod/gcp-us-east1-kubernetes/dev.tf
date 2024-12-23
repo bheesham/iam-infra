@@ -1,3 +1,9 @@
+# See the comment below, re: workloads.
+
+# You _will_ run into errors if you try setting this up for another cluster. I
+# (bhee) have not spent time making this friendly to use for that scenario,
+# since this is just a MVP.
+
 resource "google_container_cluster" "iam_dev" {
   name                     = "iam-dev"
   location                 = "us-east1"
@@ -77,4 +83,118 @@ resource "google_container_node_pool" "iam_dev_default" {
 
 resource "google_compute_global_address" "gke_iam_dev" {
   name = "gke-iam-dev"
+}
+
+resource "kubernetes_deployment_v1" "gke_iam_dev_web" {
+  metadata {
+    labels = {
+      app = "web"
+    }
+    name      = "web"
+    namespace = "default"
+  }
+  spec {
+    replicas = "1"
+    selector {
+      match_labels = {
+        app = "web"
+      }
+    }
+    strategy {
+      type = "RollingUpdate"
+      rolling_update {
+        max_surge       = "25%"
+        max_unavailable = "25%"
+      }
+    }
+    template {
+      metadata {
+        labels = {
+          app = "web"
+        }
+      }
+      spec {
+        container {
+          image             = "gcr.io/google-samples/hello-app:1.0"
+          image_pull_policy = "Always"
+          name              = "hello-app"
+          resources {
+            limits = {
+              memory = "64Mi"
+            }
+            requests = {
+              memory = "64Mi"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+resource "kubernetes_service_v1" "gke_iam_dev_web" {
+  metadata {
+    name      = "web"
+    namespace = "default"
+    labels = {
+      app = "web"
+    }
+    annotations = {
+      "cloud.google.com/neg" = jsonencode({ ingress = true })
+    }
+  }
+  spec {
+    selector = {
+      app = "web"
+    }
+    type = "ClusterIP"
+    port {
+      port        = 8080
+      protocol    = "TCP"
+      target_port = "8080"
+    }
+  }
+  lifecycle {
+    ignore_changes = [
+      metadata[0].annotations["cloud.google.com/neg-status"],
+    ]
+  }
+}
+
+resource "kubernetes_manifest" "gke_iam_dev" {
+  manifest = {
+    apiVersion = "networking.gke.io/v1"
+    kind       = "ManagedCertificate"
+    metadata = {
+      name      = "gke-iam-dev"
+      namespace = "default"
+    }
+    spec = {
+      domains = [
+        trimsuffix(google_dns_managed_zone.gke_iam_dev.dns_name, "."),
+      ]
+    }
+  }
+}
+
+resource "kubernetes_ingress_v1" "gke_iam_dev" {
+  metadata {
+    name      = "gke-iam-dev"
+    namespace = "default"
+    annotations = {
+      "kubernetes.io/ingress.global-static-ip-name" = google_compute_global_address.gke_iam_dev.name
+      "networking.gke.io/managed-certificates"      = kubernetes_manifest.gke_iam_dev.manifest.metadata.name
+      "kubernetes.io/ingress.class"                 = "gce"
+    }
+  }
+  spec {
+    default_backend {
+      service {
+        name = kubernetes_service_v1.gke_iam_dev_web.metadata[0].name
+        port {
+          number = kubernetes_service_v1.gke_iam_dev_web.spec[0].port[0].port
+        }
+      }
+    }
+  }
 }
